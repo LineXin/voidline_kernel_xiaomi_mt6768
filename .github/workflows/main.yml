@@ -1,0 +1,70 @@
+name: VoidLine Kernel Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - lineage-23.2
+    paths:
+      - "**.c"
+      - "**.h"
+      - "**.S"
+      - "**.dts"
+      - "**.dtsi"
+      - "arch/arm64/configs/**"
+      - "Makefile"
+      - "Kconfig"
+      - ".github/workflows/main.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build MT6768 kernel
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          ref: lineage-23.2
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache flex git libssl-dev \
+            libelf-dev lld llvm clang python3 python-is-python3 \
+            rsync zip
+
+      - name: Show toolchain versions
+        run: |
+          clang --version
+          ld.lld --version
+          make --version | head -n 1
+
+      - name: Configure kernel
+        run: |
+          make O=out ARCH=arm64 LLVM=1 k68v1_64_k419_defconfig
+
+      - name: Compile kernel
+        run: |
+          make -j2 O=out ARCH=arm64 LLVM=1 Image.gz
+
+      - name: Verify build output
+        run: |
+          test -s out/arch/arm64/boot/Image.gz
+          file out/arch/arm64/boot/Image.gz
+          ls -lh out/arch/arm64/boot/Image.gz
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoidLine-MT6768-Image-gz
+          path: out/arch/arm64/boot/Image.gz
+          if-no-files-found: error
+          retention-days: 14
