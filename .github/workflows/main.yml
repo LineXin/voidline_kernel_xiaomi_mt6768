@@ -46,10 +46,11 @@ jobs:
         FEAT="${{ inputs.FEAT_KSU }}"
         if [ "$FEAT" = "ksu_official" ]; then
           echo "[+] Integrating KernelSU..."
-          curl -LSs "https://raw.githubusercontent.com/tjm9999/KernelSU/main/kernel/setup.sh" | bash -s main
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
         elif [ "$FEAT" = "ksu_susfs" ]; then
           echo "[+] Integrating KernelSU + SUSFS..."
-          curl -LSs "https://raw.githubusercontent.com/tjm9999/KernelSU/main/kernel/setup.sh" | bash -s main
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+          # Если используешь susfs, сюда добавляются патчи интеграции к исходникам
         fi
 
     - name: Build Kernel
@@ -88,7 +89,7 @@ jobs:
         fi
         
         cd AnyKernel3
-        zip -r9 ../Kernel_Merlin_G85_${{ inputs.FEAT_KSU }}_$(date +%Y%m%d_%H%M).zip * -x .git\* README.md
+        zip -r9 ../VoidLineKernel_merlin_$(date +%Y%m%d_%H%M).zip * -x .git\* README.md
 
     - name: Send ZIP to Telegram
       if: always()
@@ -96,7 +97,7 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
-        ZIP_FILE=$(ls VoidLineKernel_merlin_20263010*.zip 2>/devnull | head -n 1)
+        ZIP_FILE=$(ls VoidLineKernel_merlin_*.zip 2>/dev/null | head -n 1)
         if [ -n "$ZIP_FILE" ] && [ -n "$TELEGRAM_BOT_TOKEN" ]; then
           curl -F document=@"$ZIP_FILE" \
                -F caption="✅ **Сборка ядра Merlin (Helio G85) завершена!**%0A🔧 **KSU:** ${{ inputs.FEAT_KSU }}" \
