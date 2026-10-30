@@ -55,16 +55,15 @@ jobs:
 
     - name: Build Kernel
       run: |
-        export PATH="$(pwd)/toolchain/clang/bin:$PATH"
         export ARCH=arm64
         export SUBARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         
-        # Загрузка дефконфига merlin
+        # 1. Загрузка дефконфига merlin (собирается нативном хост-компилятором без clang)
         make O=out merlin_defconfig
 
-        # Флаги KSU / SUSFS
+        # 2. Флаги KSU / SUSFS
         if [ "${{ inputs.FEAT_KSU }}" != "none" ]; then
           echo "CONFIG_KSU=y" >> out/.config
         fi
@@ -73,11 +72,16 @@ jobs:
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> out/.config
         fi
 
-        # Сборка ядра с явным разделением на HOSTCC (системный gcc для утилит) и CC (clang для ядра)
+        # 3. Сборка с добавлением clang в PATH только здесь
+        export PATH="$(pwd)/toolchain/clang/bin:$PATH"
         make -j$(nproc --all) O=out \
           CC=clang \
-          HOSTCC=gcc \
-          HOSTCXX=g++
+          AR=llvm-ar \
+          NM=llvm-nm \
+          OBJCOPY=llvm-objcopy \
+          OBJDUMP=llvm-objdump \
+          STRIP=llvm-strip \
+          LD=ld.lld
 
     - name: Zip AnyKernel3
       if: ${{ inputs.BUILD_ANYKERNEL }}
