@@ -20,7 +20,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
 
     steps:
     - name: Checkout Repository
@@ -29,12 +30,16 @@ jobs:
     - name: Set up Build Environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev libelf-dev libzip-dev zip unzip curl git ccache
+        sudo apt-get install -y --no-install-recommends \
+          build-essential bc bison flex libssl-dev libncurses-dev libelf-dev \
+          libzip-dev zip unzip curl git ccache gcc-aarch64-linux-gnu \
+          gcc-arm-linux-gnueabi
 
     - name: Download Proton-Clang Toolchain
       run: |
         mkdir -p toolchain
         git clone --depth=1 https://github.com/kdrag0n/proton-clang toolchain/clang
+        echo "$(pwd)/toolchain/clang/bin" >> "$GITHUB_PATH"
 
     - name: Setup AnyKernel3
       if: ${{ inputs.BUILD_ANYKERNEL }}
@@ -50,52 +55,64 @@ jobs:
         elif [ "$FEAT" = "ksu_susfs" ]; then
           echo "[+] Integrating KernelSU + SUSFS..."
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
-          # Если используешь susfs, сюда добавляются патчи интеграции к исходникам
+          # SUSFS patches must be applied to this kernel source separately.
         fi
 
     - name: Build Kernel
       run: |
+        set -e
         export ARCH=arm64
         export SUBARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        
-        # 1. Загрузка дефконфига merlin (собирается нативном хост-компилятором без clang)
-        make O=out merlin_defconfig
 
-        # 2. Флаги KSU / SUSFS
+        # Configure the MT6768 / Merlin kernel.
+        make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- merlin_defconfig
+
+        # Optional KernelSU flags.
         if [ "${{ inputs.FEAT_KSU }}" != "none" ]; then
-          echo "CONFIG_KSU=y" >> out/.config
+          grep -q '^CONFIG_KSU=' out/.config || echo 'CONFIG_KSU=y' >> out/.config
         fi
         if [ "${{ inputs.FEAT_KSU }}" = "ksu_susfs" ]; then
-          echo "CONFIG_KSU_SUSFS=y" >> out/.config
-          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> out/.config
+          grep -q '^CONFIG_KSU_SUSFS=' out/.config || echo 'CONFIG_KSU_SUSFS=y' >> out/.config
+          grep -q '^CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=' out/.config || echo 'CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y' >> out/.config
         fi
 
-        # 3. Сборка с добавлением clang в PATH только здесь
-        export PATH="$(pwd)/toolchain/clang/bin:$PATH"
-        make -j$(nproc --all) O=out \
-          CC=clang \
-          AR=llvm-ar \
-          NM=llvm-nm \
-          OBJCOPY=llvm-objcopy \
-          OBJDUMP=llvm-objdump \
-          STRIP=llvm-strip \
-          LD=ld.lld
+        make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+          OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+          -j"$(nproc --all)"
+
+        test -s out/arch/arm64/boot/Image
 
     - name: Zip AnyKernel3
       if: ${{ inputs.BUILD_ANYKERNEL }}
       run: |
+        set -e
         if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
         elif [ -f out/arch/arm64/boot/Image.gz ]; then
           cp out/arch/arm64/boot/Image.gz AnyKernel3/
         elif [ -f out/arch/arm64/boot/Image ]; then
           cp out/arch/arm64/boot/Image AnyKernel3/
+        else
+          echo "No kernel image was produced."
+          exit 1
         fi
-        
+
         cd AnyKernel3
-        zip -r9 ../VoidLineKernel_merlin_$(date +%Y%m%d_%H%M).zip * -x .git\* README.md
+        zip -r9 ../VoidLineKernel_merlin_$(date +%Y%m%d_%H%M).zip * -x '.git*' README.md
+
+    - name: Upload AnyKernel3 ZIP
+      if: ${{ inputs.BUILD_ANYKERNEL }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: VoidLineKernel-merlin
+        path: VoidLineKernel_merlin_*.zip
+        if-no-files-found: error
+        retention-days: 14
 
     - name: Send ZIP to Telegram
       if: always()
@@ -103,9 +120,10 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
-        ZIP_FILE=$(ls VoidLineKernel_merlin_*.zip 2>/dev/null | head -n 1)
-        if [ -n "$ZIP_FILE" ] && [ -n "$TELEGRAM_BOT_TOKEN" ]; then
-          curl -F document=@"$ZIP_FILE" \
-               -F caption="✅ **Сборка ядра Merlin (Helio G85) завершена!**%0A🔧 **KSU:** ${{ inputs.FEAT_KSU }}" \
-               "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument?chat_id=${TELEGRAM_CHAT_ID}&parse_mode=Markdown"
+        ZIP_FILE=$(ls VoidLineKernel_merlin_*.zip 2>/dev/null | head -n 1 || true)
+        if [ -n "$ZIP_FILE" ] && [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+          curl --fail --silent --show-error \
+            -F document=@"$ZIP_FILE" \
+            -F caption="VoidLine Kernel for Merlin build completed" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument?chat_id=${TELEGRAM_CHAT_ID}"
         fi
